@@ -505,7 +505,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
         <Toggle aria-label="Stacked diff view" value="stacked">
           <Rows3Icon className="size-3" />
         </Toggle>
-        <Toggle aria-label="Split diff view" value="split">
+        <Toggle aria-label="Split diff view" value="split" className="hidden sm:inline-flex">
           <Columns2Icon className="size-3" />
         </Toggle>
       </ToggleGroup>

@@ -1,6 +1,7 @@
 import {
   ArrowLeftIcon,
   ChevronRightIcon,
+  EllipsisVerticalIcon,
   FolderIcon,
   GitPullRequestIcon,
   PlusIcon,
@@ -16,6 +17,7 @@ import {
   type DragCancelEvent,
   type CollisionDetection,
   PointerSensor,
+  TouchSensor,
   type DragStartEvent,
   closestCorners,
   pointerWithin,
@@ -879,6 +881,9 @@ export default function Sidebar() {
     useSensor(PointerSensor, {
       activationConstraint: { distance: 6 },
     }),
+    useSensor(TouchSensor, {
+      activationConstraint: { delay: 200, tolerance: 6 },
+    }),
   );
   const projectCollisionDetection = useCallback<CollisionDetection>((args) => {
     const pointerCollisions = pointerWithin(args);
@@ -1553,6 +1558,21 @@ export default function Sidebar() {
                                         >
                                           {formatRelativeTime(thread.createdAt)}
                                         </span>
+                                        <button
+                                          type="button"
+                                          className="hidden size-5 items-center justify-center rounded text-muted-foreground/60 hover:bg-accent hover:text-foreground pointer-coarse:inline-flex"
+                                          aria-label="Thread actions"
+                                          onClick={(e) => {
+                                            e.preventDefault();
+                                            e.stopPropagation();
+                                            void handleThreadContextMenu(thread.id, {
+                                              x: e.clientX,
+                                              y: e.clientY,
+                                            });
+                                          }}
+                                        >
+                                          <EllipsisVerticalIcon className="size-3" />
+                                        </button>
                                       </div>
                                     </SidebarMenuSubButton>
                                   </SidebarMenuSubItem>

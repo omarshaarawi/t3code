@@ -782,7 +782,7 @@ export default function ThreadTerminalDrawer({
           <div className="min-w-0 flex-1">
             {isSplitView ? (
               <div
-                className="grid h-full w-full min-w-0 gap-0 overflow-hidden"
+                className="grid h-full w-full min-w-0 gap-0 overflow-hidden max-md:grid-cols-1"
                 style={{
                   gridTemplateColumns: `repeat(${visibleTerminalIds.length}, minmax(0, 1fr))`,
                 }}
@@ -928,7 +928,7 @@ export default function ThreadTerminalDrawer({
                                     render={
                                       <button
                                         type="button"
-                                        className="inline-flex size-3.5 items-center justify-center rounded text-xs font-medium leading-none text-muted-foreground opacity-0 transition hover:bg-accent hover:text-foreground group-hover:opacity-100"
+                                        className="inline-flex size-3.5 items-center justify-center rounded text-xs font-medium leading-none text-muted-foreground opacity-0 transition hover:bg-accent hover:text-foreground group-hover:opacity-100 pointer-coarse:opacity-100"
                                         onClick={() => onCloseTerminal(terminalId)}
                                         aria-label={closeTerminalLabel}
                                       />

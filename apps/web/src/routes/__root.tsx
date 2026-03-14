@@ -86,7 +86,7 @@ function RootRouteView() {
 
   if (authState === "checking") {
     return (
-      <div className="flex h-screen flex-col bg-background text-foreground">
+      <div className="flex h-dvh flex-col bg-background text-foreground">
         <div className="flex flex-1 items-center justify-center">
           <p className="text-sm text-muted-foreground">
             Connecting to {APP_DISPLAY_NAME} server...
@@ -102,7 +102,7 @@ function RootRouteView() {
 
   if (!readNativeApi()) {
     return (
-      <div className="flex h-screen flex-col bg-background text-foreground">
+      <div className="flex h-dvh flex-col bg-background text-foreground">
         <div className="flex flex-1 items-center justify-center">
           <p className="text-sm text-muted-foreground">
             Connecting to {APP_DISPLAY_NAME} server...
@@ -156,7 +156,7 @@ function AuthTokenPrompt({ onAuthenticated }: { onAuthenticated: () => void }) {
   );
 
   return (
-    <div className="flex h-screen flex-col bg-background text-foreground">
+    <div className="flex h-dvh flex-col bg-background text-foreground">
       <div className="flex flex-1 items-center justify-center px-4">
         <form onSubmit={handleSubmit} className="w-full max-w-sm space-y-4">
           <div className="space-y-1">
@@ -195,7 +195,7 @@ function RootRouteErrorView({ error, reset }: ErrorComponentProps) {
   const details = errorDetails(error);
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-background px-4 py-10 text-foreground sm:px-6">
+    <div className="relative flex min-h-dvh items-center justify-center overflow-hidden bg-background px-4 py-10 text-foreground sm:px-6">
       <div className="pointer-events-none absolute inset-0 opacity-80">
         <div className="absolute inset-x-0 top-0 h-44 bg-[radial-gradient(44rem_16rem_at_top,color-mix(in_srgb,var(--color-red-500)_16%,transparent),transparent)]" />
         <div className="absolute inset-0 bg-[linear-gradient(145deg,color-mix(in_srgb,var(--background)_90%,var(--color-black))_0%,var(--background)_55%)]" />
