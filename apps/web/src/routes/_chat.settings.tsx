@@ -1,8 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useState } from "react";
-import { type ProviderKind } from "@t3tools/contracts";
+import { DEFAULT_MODEL_BY_PROVIDER, type ProviderKind } from "@t3tools/contracts";
 import { getModelOptions, normalizeModelSlug } from "@t3tools/shared/model";
+import { PROVIDER_OPTIONS } from "../session-logic";
 import { MAX_CUSTOM_MODEL_LENGTH, useAppSettings } from "../appSettings";
 import { resolveAndPersistPreferredEditor } from "../editorPreferences";
 import { isElectron } from "../env";
@@ -309,6 +310,102 @@ function SettingsRouteView() {
                       }
                     >
                       Restore default
+                    </Button>
+                  </div>
+                ) : null}
+              </div>
+            </section>
+
+            <section className="rounded-2xl border border-border bg-card p-5">
+              <div className="mb-4">
+                <h2 className="text-sm font-medium text-foreground">Default Provider & Model</h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Choose the default provider and model for new chat threads.
+                </p>
+              </div>
+
+              <div className="space-y-4">
+                <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+                  <div>
+                    <p className="text-sm font-medium text-foreground">Provider</p>
+                    <p className="text-xs text-muted-foreground">
+                      The AI provider used by default when creating a new thread.
+                    </p>
+                  </div>
+                  <Select
+                    value={settings.defaultProvider}
+                    onValueChange={(value) => {
+                      if (value !== "codex" && value !== "claude") return;
+                      updateSettings({
+                        defaultProvider: value,
+                        defaultModel: DEFAULT_MODEL_BY_PROVIDER[value],
+                      });
+                    }}
+                  >
+                    <SelectTrigger className="w-40" aria-label="Default provider">
+                      <SelectValue>
+                        {PROVIDER_OPTIONS.find((o) => o.value === settings.defaultProvider)?.label ??
+                          settings.defaultProvider}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectPopup align="end">
+                      {PROVIDER_OPTIONS.filter((o) => o.available).map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectPopup>
+                  </Select>
+                </div>
+
+                <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+                  <div>
+                    <p className="text-sm font-medium text-foreground">Model</p>
+                    <p className="text-xs text-muted-foreground">
+                      The model selected by default for the chosen provider.
+                    </p>
+                  </div>
+                  <Select
+                    value={settings.defaultModel || DEFAULT_MODEL_BY_PROVIDER[settings.defaultProvider]}
+                    onValueChange={(value) => {
+                      if (value) updateSettings({ defaultModel: value });
+                    }}
+                  >
+                    <SelectTrigger className="w-56" aria-label="Default model">
+                      <SelectValue>
+                        {(() => {
+                          const currentSlug = settings.defaultModel || DEFAULT_MODEL_BY_PROVIDER[settings.defaultProvider];
+                          const option = getModelOptions(settings.defaultProvider).find(
+                            (o) => o.slug === currentSlug,
+                          );
+                          return option?.name ?? currentSlug;
+                        })()}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectPopup align="end">
+                      {getModelOptions(settings.defaultProvider).map((option) => (
+                        <SelectItem key={option.slug} value={option.slug}>
+                          {option.name}
+                        </SelectItem>
+                      ))}
+                    </SelectPopup>
+                  </Select>
+                </div>
+
+                {(settings.defaultProvider !== defaults.defaultProvider ||
+                  settings.defaultModel !== defaults.defaultModel) ? (
+                  <div className="flex justify-end">
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      onClick={() =>
+                        updateSettings({
+                          defaultProvider: defaults.defaultProvider,
+                          defaultModel: defaults.defaultModel,
+                        })
+                      }
+                    >
+                      Restore defaults
                     </Button>
                   </div>
                 ) : null}
