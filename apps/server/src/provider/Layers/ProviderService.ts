@@ -205,13 +205,6 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           }
         }
 
-        if (!hasResumeCursor) {
-          return yield* toValidationError(
-            input.operation,
-            `Cannot recover thread '${input.binding.threadId}' because no provider resume state is persisted.`,
-          );
-        }
-
         const persistedCwd = readPersistedCwd(input.binding.runtimePayload);
         const persistedProviderOptions = readPersistedProviderOptions(input.binding.runtimePayload);
 
