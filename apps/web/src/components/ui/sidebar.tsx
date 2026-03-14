@@ -24,7 +24,7 @@ import { Schema } from "effect";
 const SIDEBAR_COOKIE_NAME = "sidebar_state";
 const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
 const SIDEBAR_WIDTH = "16rem";
-const SIDEBAR_WIDTH_MOBILE = "calc(100vw - var(--spacing(3)))";
+const SIDEBAR_WIDTH_MOBILE = "min(20rem, calc(100vw - 3rem))";
 const SIDEBAR_WIDTH_ICON = "3rem";
 const SIDEBAR_RESIZE_DEFAULT_MIN_WIDTH = 16 * 16;
 
@@ -233,7 +233,7 @@ function Sidebar({
             data-mobile="true"
             data-sidebar="sidebar"
             data-slot="sidebar"
-            showCloseButton={false}
+            showCloseButton
             side={side}
             style={
               {

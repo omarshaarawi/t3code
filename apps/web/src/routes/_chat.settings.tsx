@@ -1,6 +1,7 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useState } from "react";
+import { ArrowLeftIcon } from "lucide-react";
 import { DEFAULT_MODEL_BY_PROVIDER, type ProviderKind } from "@t3tools/contracts";
 import { getModelOptions, normalizeModelSlug } from "@t3tools/shared/model";
 import { PROVIDER_OPTIONS } from "../session-logic";
@@ -211,14 +212,29 @@ function SettingsRouteView() {
     [settings, updateSettings],
   );
 
+  const navigate = useNavigate();
+
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground">
-        {isElectron && (
+        {isElectron ? (
           <div className="drag-region flex h-[52px] shrink-0 items-center border-b border-border px-5">
             <span className="text-xs font-medium tracking-wide text-muted-foreground/70">
               Settings
             </span>
+          </div>
+        ) : (
+          <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3 md:hidden">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-8"
+              onClick={() => navigate({ to: "/" })}
+              aria-label="Back to chat"
+            >
+              <ArrowLeftIcon className="size-4" />
+            </Button>
+            <span className="text-sm font-medium text-foreground">Settings</span>
           </div>
         )}
 
