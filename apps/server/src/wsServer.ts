@@ -410,6 +410,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     } satisfies OrchestrationCommand;
   });
 
+  const JSON_HEADERS = { "Content-Type": "application/json" };
+
   // HTTP server — serves static files or redirects to Vite dev server
   const httpServer = http.createServer((req, res) => {
     const respond = (
@@ -424,6 +426,32 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     void Effect.runPromise(
       Effect.gen(function* () {
         const url = new URL(req.url ?? "/", `http://localhost:${port}`);
+
+        // ── Auth API endpoints ───────────────────────────────────────
+        if (url.pathname === "/api/auth/status") {
+          respond(200, JSON_HEADERS, JSON.stringify({ required: Boolean(authToken) }));
+          return;
+        }
+
+        if (url.pathname === "/api/auth/validate") {
+          if (!authToken) {
+            respond(200, JSON_HEADERS, JSON.stringify({ valid: true }));
+            return;
+          }
+          const token = url.searchParams.get("token");
+          respond(200, JSON_HEADERS, JSON.stringify({ valid: token === authToken }));
+          return;
+        }
+
+        // ── Guard non-static API/attachment routes with auth token ──
+        if (authToken && url.pathname.startsWith(ATTACHMENTS_ROUTE_PREFIX)) {
+          const token = url.searchParams.get("token");
+          if (token !== authToken) {
+            respond(401, JSON_HEADERS, JSON.stringify({ error: "Unauthorized" }));
+            return;
+          }
+        }
+
         if (tryHandleProjectFaviconRequest(url, res)) {
           return;
         }

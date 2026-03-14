@@ -1,0 +1,10 @@
+node_modules
+.turbo
+apps/*/dist
+apps/*/dist-electron
+packages/*/dist
+apps/desktop
+apps/marketing
+.git
+*.md
+!REMOTE.md

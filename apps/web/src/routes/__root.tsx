@@ -6,12 +6,14 @@ import {
   useNavigate,
   useRouterState,
 } from "@tanstack/react-router";
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { QueryClient, useQueryClient } from "@tanstack/react-query";
 import { Throttler } from "@tanstack/react-pacer";
 
+import { getAuthToken, setAuthToken } from "../authToken";
 import { APP_DISPLAY_NAME } from "../branding";
 import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
 import { AnchoredToastProvider, ToastProvider, toastManager } from "../components/ui/toast";
 import { resolveAndPersistPreferredEditor } from "../editorPreferences";
 import { serverConfigQueryOptions, serverQueryKeys } from "../lib/serverReactQuery";
@@ -35,7 +37,69 @@ export const Route = createRootRouteWithContext<{
   }),
 });
 
+type AuthGateState = "checking" | "needed" | "ok";
+
 function RootRouteView() {
+  const [authState, setAuthState] = useState<AuthGateState>(() =>
+    // Desktop bridge handles its own auth; skip the gate entirely.
+    window.desktopBridge ? "ok" : "checking",
+  );
+
+  useEffect(() => {
+    if (authState !== "checking") return;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const res = await fetch("/api/auth/status");
+        const body = (await res.json()) as { required: boolean };
+        if (cancelled) return;
+
+        if (!body.required) {
+          setAuthState("ok");
+          return;
+        }
+
+        // Auth required. Do we already have a valid token?
+        const token = getAuthToken();
+        if (token) {
+          const validateRes = await fetch(`/api/auth/validate?token=${encodeURIComponent(token)}`);
+          const validateBody = (await validateRes.json()) as { valid: boolean };
+          if (!cancelled) {
+            setAuthState(validateBody.valid ? "ok" : "needed");
+          }
+        } else {
+          setAuthState("needed");
+        }
+      } catch {
+        // Can't reach auth endpoints. Probably no server yet; fall through
+        // to the normal "connecting..." state by treating as ok (the WS
+        // layer will surface the real connection error).
+        if (!cancelled) setAuthState("ok");
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authState]);
+
+  if (authState === "checking") {
+    return (
+      <div className="flex h-screen flex-col bg-background text-foreground">
+        <div className="flex flex-1 items-center justify-center">
+          <p className="text-sm text-muted-foreground">
+            Connecting to {APP_DISPLAY_NAME} server...
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (authState === "needed") {
+    return <AuthTokenPrompt onAuthenticated={() => setAuthState("ok")} />;
+  }
+
   if (!readNativeApi()) {
     return (
       <div className="flex h-screen flex-col bg-background text-foreground">
@@ -56,6 +120,73 @@ function RootRouteView() {
         <Outlet />
       </AnchoredToastProvider>
     </ToastProvider>
+  );
+}
+
+function AuthTokenPrompt({ onAuthenticated }: { onAuthenticated: () => void }) {
+  const [token, setToken] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  const handleSubmit = useCallback(
+    async (e: React.FormEvent) => {
+      e.preventDefault();
+      const trimmed = token.trim();
+      if (!trimmed) return;
+
+      setSubmitting(true);
+      setError(null);
+
+      try {
+        const res = await fetch(`/api/auth/validate?token=${encodeURIComponent(trimmed)}`);
+        const body = (await res.json()) as { valid: boolean };
+        if (body.valid) {
+          setAuthToken(trimmed);
+          onAuthenticated();
+        } else {
+          setError("Invalid token.");
+        }
+      } catch {
+        setError("Unable to reach the server.");
+      } finally {
+        setSubmitting(false);
+      }
+    },
+    [token, onAuthenticated],
+  );
+
+  return (
+    <div className="flex h-screen flex-col bg-background text-foreground">
+      <div className="flex flex-1 items-center justify-center px-4">
+        <form onSubmit={handleSubmit} className="w-full max-w-sm space-y-4">
+          <div className="space-y-1">
+            <p className="text-[11px] font-semibold tracking-[0.18em] text-muted-foreground uppercase">
+              {APP_DISPLAY_NAME}
+            </p>
+            <h1 className="text-xl font-semibold tracking-tight">Authentication required</h1>
+            <p className="text-sm text-muted-foreground">
+              Enter the auth token to connect to this server.
+            </p>
+          </div>
+
+          <Input
+            type="password"
+            value={token}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setToken(e.target.value)}
+            placeholder="Auth token"
+            autoFocus
+            autoComplete="off"
+            aria-label="Auth token"
+          />
+
+          {error && <p className="text-sm text-destructive">{error}</p>}
+
+          <Button type="submit" className="w-full" disabled={submitting || !token.trim()}>
+            {submitting ? "Verifying..." : "Connect"}
+          </Button>
+        </form>
+      </div>
+    </div>
   );
 }
 

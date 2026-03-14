@@ -465,7 +465,14 @@ function TerminalActionButton({ label, className, onClick, children }: TerminalA
     <Popover>
       <PopoverTrigger
         openOnHover
-        render={<button type="button" className={className} onClick={onClick} aria-label={label} />}
+        render={
+          <button
+            type="button"
+            className={`relative ${className} pointer-coarse:after:absolute pointer-coarse:after:min-h-11 pointer-coarse:after:min-w-11 pointer-coarse:after:inset-1/2 pointer-coarse:after:-translate-1/2`}
+            onClick={onClick}
+            aria-label={label}
+          />
+        }
       >
         {children}
       </PopoverTrigger>
@@ -729,7 +736,7 @@ export default function ThreadTerminalDrawer({
       style={{ height: `${drawerHeight}px` }}
     >
       <div
-        className="absolute inset-x-0 top-0 z-20 h-1.5 cursor-row-resize"
+        className="absolute inset-x-0 top-0 z-20 h-1.5 cursor-row-resize touch-none after:pointer-events-none after:absolute after:inset-x-0 after:-top-3 after:h-8"
         onPointerDown={handleResizePointerDown}
         onPointerMove={handleResizePointerMove}
         onPointerUp={handleResizePointerEnd}

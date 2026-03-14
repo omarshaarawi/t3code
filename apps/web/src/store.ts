@@ -15,6 +15,7 @@ import {
 import { create } from "zustand";
 import { type ChatMessage, type Project, type Thread } from "./types";
 import { Debouncer } from "@tanstack/react-pacer";
+import { getAuthToken } from "./authToken";
 
 // ── State ────────────────────────────────────────────────────────────
 
@@ -234,7 +235,11 @@ function resolveWsHttpOrigin(): string {
 
 function toAttachmentPreviewUrl(rawUrl: string): string {
   if (rawUrl.startsWith("/")) {
-    return `${resolveWsHttpOrigin()}${rawUrl}`;
+    const base = `${resolveWsHttpOrigin()}${rawUrl}`;
+    const token = getAuthToken();
+    if (!token) return base;
+    const separator = base.includes("?") ? "&" : "?";
+    return `${base}${separator}token=${encodeURIComponent(token)}`;
   }
   return rawUrl;
 }

@@ -9,6 +9,8 @@ import {
 import { decodeUnknownJsonResult, formatSchemaError } from "@t3tools/shared/schemaJson";
 import { Result, Schema } from "effect";
 
+import { getAuthToken } from "./authToken";
+
 type PushListener<C extends WsPushChannel> = (message: WsPushMessage<C>) => void;
 
 interface PendingRequest {
@@ -62,13 +64,14 @@ export class WsTransport {
   constructor(url?: string) {
     const bridgeUrl = window.desktopBridge?.getWsUrl();
     const envUrl = import.meta.env.VITE_WS_URL as string | undefined;
-    this.url =
+    const baseUrl =
       url ??
       (bridgeUrl && bridgeUrl.length > 0
         ? bridgeUrl
         : envUrl && envUrl.length > 0
           ? envUrl
           : `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.hostname}:${window.location.port}`);
+    this.url = appendAuthToken(baseUrl);
     this.connect();
   }
 
@@ -281,5 +284,20 @@ export class WsTransport {
       this.reconnectTimer = null;
       this.connect();
     }, delay);
+  }
+}
+
+function appendAuthToken(url: string): string {
+  const token = getAuthToken();
+  if (!token) return url;
+  try {
+    // WebSocket URLs use ws:/wss: schemes which URL can parse.
+    const parsed = new URL(url);
+    parsed.searchParams.set("token", token);
+    return parsed.toString();
+  } catch {
+    // Fallback: naive append for malformed URLs.
+    const separator = url.includes("?") ? "&" : "?";
+    return `${url}${separator}token=${encodeURIComponent(token)}`;
   }
 }
