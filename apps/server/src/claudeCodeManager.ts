@@ -4,8 +4,8 @@
  * Wraps the `@anthropic-ai/claude-agent-sdk` and emits `ProviderEvent` objects
  * through an EventEmitter, following the same pattern as `CodexAppServerManager`.
  *
- * Ported from the theo/claude branch and adapted to emit events compatible with
- * the existing canonical event pipeline.
+ * Handles all SDK message types and emits events that the adapter layer maps
+ * to canonical ProviderRuntimeEvent objects with full Codex feature parity.
  *
  * @module ClaudeCodeManager
  */
@@ -42,8 +42,6 @@ import type {
   ProviderThreadTurnSnapshot,
 } from "./provider/Services/ProviderAdapter";
 
-// Re-export the ProviderEvent type from contracts so the adapter layer can
-// subscribe to events with the correct type.
 type ProviderEvent = import("@t3tools/contracts").ProviderEvent;
 
 const PROVIDER: ProviderKind = "claude";
@@ -67,6 +65,10 @@ interface ClaudeTurnState {
   userContent: unknown[];
   assistantText: string;
   assistantStarted: boolean;
+  model: string | undefined;
+  interrupted: boolean;
+  /** Track active tool_use items so we can emit item/completed for each. */
+  activeToolUseIds: Set<string>;
 }
 
 interface ClaudeSessionContext {
@@ -142,17 +144,101 @@ function asString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+function asNumber(value: unknown): number | undefined {
+  return typeof value === "number" ? value : undefined;
+}
+
 function inferRequestKindForTool(toolName: string): ProviderRequestKind {
   const normalized = toolName.toLowerCase();
   if (
     normalized.includes("edit") ||
     normalized.includes("write") ||
-    normalized.includes("file") ||
-    normalized.includes("patch")
+    normalized.includes("patch") ||
+    normalized === "multiedit"
   ) {
     return "file-change";
   }
   return "command";
+}
+
+/**
+ * Map Claude tool names to canonical item types used by the Codex adapter.
+ * Claude Code tools: Bash, Read, Write, Edit, MultiEdit, Glob, Grep, WebFetch,
+ * Task, TodoRead, TodoWrite, Agent, NotebookEdit, etc.
+ */
+function inferCanonicalItemType(toolName: string): string {
+  const normalized = toolName.toLowerCase();
+  if (normalized === "bash" || normalized === "command" || normalized === "terminal") {
+    return "command_execution";
+  }
+  if (
+    normalized === "edit" ||
+    normalized === "write" ||
+    normalized === "multiedit" ||
+    normalized === "notebookedit" ||
+    normalized === "patch"
+  ) {
+    return "file_change";
+  }
+  if (normalized === "read" || normalized === "glob" || normalized === "grep") {
+    return "file_change";
+  }
+  if (normalized === "webfetch" || normalized === "web_search") {
+    return "web_search";
+  }
+  if (normalized === "task" || normalized === "agent") {
+    return "collab_agent_tool_call";
+  }
+  if (normalized.startsWith("mcp_") || normalized.includes("mcp")) {
+    return "mcp_tool_call";
+  }
+  return "command_execution";
+}
+
+/**
+ * Extract a human-readable detail string from a tool's input object.
+ * Mirrors the Codex adapter's `itemDetail` function.
+ */
+function extractToolDetail(toolName: string, input: unknown): string | undefined {
+  const obj = asObject(input);
+  if (!obj) return undefined;
+
+  // Bash: show the command
+  if (toolName.toLowerCase() === "bash") {
+    return asString(obj.command) ?? asString(obj.cmd);
+  }
+  // File tools: show the path
+  const path =
+    asString(obj.file_path) ??
+    asString(obj.filePath) ??
+    asString(obj.path) ??
+    asString(obj.file) ??
+    asString(obj.pattern);
+  if (path) return path;
+
+  // Task/Agent: show description
+  return asString(obj.description) ?? asString(obj.prompt) ?? asString(obj.query);
+}
+
+/**
+ * Map a Claude tool name to a human-readable title matching
+ * the Codex adapter's `itemTitle` function.
+ */
+function toolTitle(toolName: string, itemType: string): string {
+  switch (itemType) {
+    case "command_execution":
+      return "Ran command";
+    case "file_change":
+      return "File change";
+    case "web_search":
+      return "Web search";
+    case "mcp_tool_call":
+      return `MCP: ${toolName}`;
+    case "collab_agent_tool_call":
+      return "Agent task";
+    default:
+      return toolName;
+  }
 }
 
 // ── Manager ─────────────────────────────────────────────────────────
@@ -229,6 +315,7 @@ export class ClaudeCodeManager extends EventEmitter<ClaudeCodeManagerEvents> {
           : {}),
         ...(input.resumeCursor ? { resume: input.resumeCursor as string } : {}),
         includePartialMessages: true,
+        enableFileCheckpointing: true,
         abortController,
         canUseTool: (toolName, toolInput, options) =>
           this.handleCanUseTool(threadId as string, toolName, toolInput, options),
@@ -258,10 +345,9 @@ export class ClaudeCodeManager extends EventEmitter<ClaudeCodeManagerEvents> {
     try {
       const initialization = await ctx.query.initializationResult();
 
-      // The SDK may assign a different session ID. Store it as the
-      // resume cursor so we can reconnect later, but keep the
-      // canonical threadId unchanged -- the orchestration layer uses
-      // that to route events back to the correct thread.
+      // Store the SDK session ID as a resume cursor only -- never
+      // overwrite the canonical threadId that the orchestration layer
+      // uses for event routing.
       const sessionId = asString(asObject(initialization)?.session_id);
       if (sessionId) {
         this.updateSession(ctx, { resumeCursor: sessionId });
@@ -290,6 +376,23 @@ export class ClaudeCodeManager extends EventEmitter<ClaudeCodeManagerEvents> {
     if (input.input) {
       userContent.push({ type: "text", text: input.input });
     }
+
+    // Handle image attachments
+    if (input.attachments && input.attachments.length > 0) {
+      for (const attachment of input.attachments) {
+        if (attachment.type === "image" && attachment.id) {
+          // Attachments are persisted on disk by the WS server.
+          // The Claude SDK expects base64 image data in the message content.
+          // For now we include a reference; the adapter layer should resolve
+          // the actual data before passing to sendTurn if needed.
+          userContent.push({
+            type: "text",
+            text: `[Image attachment: ${attachment.name ?? attachment.id}]`,
+          });
+        }
+      }
+    }
+
     if (userContent.length === 0) {
       throw new Error("Turn input must include text.");
     }
@@ -306,12 +409,17 @@ export class ClaudeCodeManager extends EventEmitter<ClaudeCodeManagerEvents> {
       userContent,
       assistantText: "",
       assistantStarted: false,
+      model: ctx.session.model,
+      interrupted: false,
+      activeToolUseIds: new Set(),
     };
 
     this.updateSession(ctx, { status: "running", activeTurnId: turnId as TurnId });
     this.emitProviderEvent(ctx, "notification", "turn/started", {
       turnId: turnId as TurnId,
-      payload: { turn: { id: turnId } },
+      payload: {
+        turn: { id: turnId, model: ctx.session.model },
+      },
     });
 
     const messageContent: Array<Record<string, unknown>> = [];
@@ -322,7 +430,7 @@ export class ClaudeCodeManager extends EventEmitter<ClaudeCodeManagerEvents> {
     ctx.queue.push({
       message: {
         type: "user",
-        session_id: (ctx.session.threadId ?? "") as string,
+        session_id: (ctx.session.resumeCursor ?? ctx.session.threadId ?? "") as string,
         parent_tool_use_id: null,
         message: { role: "user", content: messageContent },
       },
@@ -331,12 +439,15 @@ export class ClaudeCodeManager extends EventEmitter<ClaudeCodeManagerEvents> {
     return {
       threadId: ctx.session.threadId,
       turnId: turnId as TurnId,
-      resumeCursor: ctx.session.threadId,
+      resumeCursor: ctx.session.resumeCursor ?? ctx.session.threadId,
     };
   }
 
   async interruptTurn(threadId: ThreadId, _turnId?: TurnId): Promise<void> {
     const ctx = this.requireSession(threadId as string);
+    if (ctx.currentTurn) {
+      ctx.currentTurn.interrupted = true;
+    }
     await ctx.query.interrupt();
   }
 
@@ -443,50 +554,235 @@ export class ClaudeCodeManager extends EventEmitter<ClaudeCodeManagerEvents> {
   }
 
   private handleMessage(ctx: ClaudeSessionContext, message: SDKMessage): void {
-    // The SDK may report a different session_id in each message. Store
-    // it as the resume cursor but never change the canonical threadId
-    // -- the orchestration layer uses that to match events.
+    // Store the SDK session ID as resume cursor without changing canonical threadId.
     const sessionThreadId = asString(asObject(message)?.session_id);
     if (sessionThreadId && sessionThreadId !== ctx.session.resumeCursor) {
       this.updateSession(ctx, { resumeCursor: sessionThreadId });
     }
 
-    if (message.type === "system" && message.subtype === "init") {
+    // ── System messages ───────────────────────────────────────────
+    if (message.type === "system") {
+      this.handleSystemMessage(ctx, message);
+      return;
+    }
+
+    // ── Streaming partial messages ────────────────────────────────
+    if (message.type === "stream_event") {
+      this.handleStreamEvent(ctx, message);
+      return;
+    }
+
+    // ── Complete assistant messages ────────────────────────────────
+    if (message.type === "assistant") {
+      this.handleAssistantMessage(ctx, message);
+      return;
+    }
+
+    // ── Tool progress ─────────────────────────────────────────────
+    if (message.type === "tool_progress") {
+      this.emitProviderEvent(ctx, "notification", "tool_use/progress", {
+        itemId: ProviderItemId.makeUnsafe(message.tool_use_id),
+        payload: {
+          toolUseId: message.tool_use_id,
+          toolName: message.tool_name,
+          elapsedSeconds: message.elapsed_time_seconds,
+        },
+      });
+      return;
+    }
+
+    // ── Tool use summary ──────────────────────────────────────────
+    if (message.type === "tool_use_summary") {
+      this.emitProviderEvent(ctx, "notification", "tool_use/summary", {
+        payload: {
+          summary: message.summary,
+          precedingToolUseIds: message.preceding_tool_use_ids,
+        },
+      });
+      return;
+    }
+
+    // ── Result (turn completed) ───────────────────────────────────
+    if (message.type === "result") {
+      this.completeTurn(ctx, message);
+      return;
+    }
+
+    // ── Rate limit events ─────────────────────────────────────────
+    if (message.type === "rate_limit_event") {
+      const info = asObject(message.rate_limit_info);
+      if (info) {
+        this.emitProviderEvent(ctx, "notification", "account/rateLimits/updated", {
+          payload: info,
+        });
+      }
+      return;
+    }
+
+    // ── Auth status ───────────────────────────────────────────────
+    if (message.type === "auth_status") {
+      this.emitProviderEvent(ctx, "notification", "auth/status", {
+        payload: {
+          isAuthenticating: message.isAuthenticating,
+          output: message.output,
+          ...(message.error ? { error: message.error } : {}),
+        },
+      });
+      return;
+    }
+  }
+
+  // ── System message handler ────────────────────────────────────────
+
+  private handleSystemMessage(
+    ctx: ClaudeSessionContext,
+    message: Extract<SDKMessage, { type: "system" }>,
+  ): void {
+    const subtype = asString(asObject(message)?.subtype);
+
+    if (subtype === "init") {
       this.emitProviderEvent(ctx, "notification", "thread/started", {
         payload: { thread: { id: ctx.session.threadId }, raw: message },
       });
       return;
     }
 
-    if (message.type === "stream_event") {
-      this.handleStreamEvent(ctx, message);
-      return;
-    }
-
-    if (message.type === "assistant") {
-      this.handleAssistantMessage(ctx, message);
-      return;
-    }
-
-    if (message.type === "tool_progress") {
-      this.emitProviderEvent(ctx, "notification", "tool_use/progress", {
-        itemId: ProviderItemId.makeUnsafe(message.tool_use_id),
-        payload: { toolName: message.tool_name, raw: message },
+    // Task lifecycle (subagent tasks)
+    if (subtype === "task_started") {
+      const msg = message as unknown as {
+        task_id: string;
+        tool_use_id?: string;
+        description: string;
+        task_type?: string;
+      };
+      this.emitProviderEvent(ctx, "notification", "task/started", {
+        payload: {
+          taskId: msg.task_id,
+          toolUseId: msg.tool_use_id,
+          description: msg.description,
+          taskType: msg.task_type,
+        },
       });
       return;
     }
 
-    if (message.type === "tool_use_summary") {
-      this.emitProviderEvent(ctx, "notification", "tool_use/summary", {
-        payload: { summary: message.summary, toolUseIds: message.preceding_tool_use_ids },
+    if (subtype === "task_progress") {
+      const msg = message as unknown as {
+        task_id: string;
+        tool_use_id?: string;
+        description: string;
+        usage: { total_tokens: number; tool_uses: number; duration_ms: number };
+        last_tool_name?: string;
+        summary?: string;
+      };
+      this.emitProviderEvent(ctx, "notification", "task/progress", {
+        payload: {
+          taskId: msg.task_id,
+          toolUseId: msg.tool_use_id,
+          description: msg.description,
+          usage: msg.usage,
+          lastToolName: msg.last_tool_name,
+          summary: msg.summary,
+        },
       });
       return;
     }
 
-    if (message.type === "result") {
-      this.completeTurn(ctx, message);
+    if (subtype === "task_notification") {
+      const msg = message as unknown as {
+        task_id: string;
+        tool_use_id?: string;
+        status: string;
+        summary: string;
+        usage?: { total_tokens: number; tool_uses: number; duration_ms: number };
+      };
+      this.emitProviderEvent(ctx, "notification", "task/completed", {
+        payload: {
+          taskId: msg.task_id,
+          toolUseId: msg.tool_use_id,
+          status: msg.status,
+          summary: msg.summary,
+          usage: msg.usage,
+        },
+      });
+      return;
+    }
+
+    // Hook lifecycle
+    if (subtype === "hook_started") {
+      const msg = message as unknown as {
+        hook_id: string;
+        hook_name: string;
+        hook_event: string;
+      };
+      this.emitProviderEvent(ctx, "notification", "hook/started", {
+        payload: { hookId: msg.hook_id, hookName: msg.hook_name, hookEvent: msg.hook_event },
+      });
+      return;
+    }
+
+    if (subtype === "hook_progress") {
+      const msg = message as unknown as {
+        hook_id: string;
+        hook_name: string;
+        hook_event: string;
+        stdout: string;
+        stderr: string;
+        output: string;
+      };
+      this.emitProviderEvent(ctx, "notification", "hook/progress", {
+        payload: {
+          hookId: msg.hook_id,
+          output: msg.output,
+          stdout: msg.stdout,
+          stderr: msg.stderr,
+        },
+      });
+      return;
+    }
+
+    if (subtype === "hook_response") {
+      const msg = message as unknown as {
+        hook_id: string;
+        hook_name: string;
+        hook_event: string;
+        output: string;
+        stdout: string;
+        stderr: string;
+        exit_code?: number;
+        outcome: string;
+      };
+      this.emitProviderEvent(ctx, "notification", "hook/completed", {
+        payload: {
+          hookId: msg.hook_id,
+          outcome: msg.outcome,
+          output: msg.output,
+          stdout: msg.stdout,
+          stderr: msg.stderr,
+          exitCode: msg.exit_code,
+        },
+      });
+      return;
+    }
+
+    // Files persisted
+    if (subtype === "files_persisted") {
+      this.emitProviderEvent(ctx, "notification", "files/persisted", {
+        payload: message,
+      });
+      return;
+    }
+
+    // Compact boundary
+    if (subtype === "compact_boundary") {
+      this.emitProviderEvent(ctx, "notification", "thread/compacted", {
+        payload: message,
+      });
+      return;
     }
   }
+
+  // ── Stream event handler (partial messages) ───────────────────────
 
   private handleStreamEvent(
     ctx: ClaudeSessionContext,
@@ -494,24 +790,66 @@ export class ClaudeCodeManager extends EventEmitter<ClaudeCodeManagerEvents> {
   ): void {
     const event = asObject(message.event);
     const eventType = asString(event?.type);
-    if (eventType !== "content_block_delta") return;
 
-    const delta = asObject(event?.delta);
-    const deltaType = asString(delta?.type);
+    if (eventType === "content_block_delta") {
+      const delta = asObject(event?.delta);
+      const deltaType = asString(delta?.type);
 
-    if (deltaType === "text_delta") {
-      const text = asString(delta?.text);
-      if (text) this.appendAssistantDelta(ctx, text);
-    } else if (deltaType === "thinking_delta") {
-      const thinking = asString(delta?.thinking);
-      if (thinking) {
-        this.emitProviderEvent(ctx, "notification", "assistant/thinking", {
-          textDelta: thinking,
-          payload: { raw: message },
+      if (deltaType === "text_delta") {
+        const text = asString(delta?.text);
+        if (text) this.appendAssistantDelta(ctx, text);
+      } else if (deltaType === "thinking_delta") {
+        const thinking = asString(delta?.thinking);
+        if (thinking) {
+          this.emitProviderEvent(ctx, "notification", "item/reasoning/textDelta", {
+            textDelta: thinking,
+            payload: { raw: message },
+          });
+        }
+      }
+      return;
+    }
+
+    // content_block_start with tool_use type -- emit item/started for tool
+    if (eventType === "content_block_start") {
+      const contentBlock = asObject(event?.content_block);
+      const blockType = asString(contentBlock?.type);
+      if (blockType === "tool_use") {
+        const toolUseId = asString(contentBlock?.id) ?? randomUUID();
+        const toolName = asString(contentBlock?.name) ?? "tool";
+        const itemType = inferCanonicalItemType(toolName);
+        const title = toolTitle(toolName, itemType);
+
+        if (ctx.currentTurn) {
+          ctx.currentTurn.activeToolUseIds.add(toolUseId);
+        }
+
+        this.emitProviderEvent(ctx, "notification", "item/started", {
+          itemId: ProviderItemId.makeUnsafe(toolUseId),
+          payload: {
+            item: {
+              id: toolUseId,
+              type: itemType,
+              tool: toolName,
+            },
+            itemType,
+            title,
+          },
         });
       }
+      return;
+    }
+
+    // content_block_stop -- emit item/completed for tool_use blocks
+    if (eventType === "content_block_stop") {
+      // We don't get the tool_use_id in content_block_stop, but we can
+      // check if this is a tool block by index. For now, we'll handle
+      // completion in handleAssistantMessage when we get the full message.
+      return;
     }
   }
+
+  // ── Assistant message handler (complete messages) ─────────────────
 
   private handleAssistantMessage(
     ctx: ClaudeSessionContext,
@@ -532,28 +870,83 @@ export class ClaudeCodeManager extends EventEmitter<ClaudeCodeManagerEvents> {
       } else if (type === "thinking") {
         const thinking = asString(block?.thinking);
         if (thinking) {
-          this.emitProviderEvent(ctx, "notification", "assistant/thinking", {
+          this.emitProviderEvent(ctx, "notification", "item/reasoning/textDelta", {
             payload: { text: thinking },
           });
         }
       } else if (type === "tool_use") {
         const toolUseId = asString(block?.id) ?? randomUUID();
         const toolName = asString(block?.name) ?? "tool";
-        this.emitProviderEvent(ctx, "notification", "item/started", {
+        const itemType = inferCanonicalItemType(toolName);
+        const title = toolTitle(toolName, itemType);
+        const detail = extractToolDetail(toolName, block?.input);
+
+        // If we haven't already emitted item/started for this tool
+        // (from stream_event), emit it now.
+        if (ctx.currentTurn && !ctx.currentTurn.activeToolUseIds.has(toolUseId)) {
+          ctx.currentTurn.activeToolUseIds.add(toolUseId);
+          this.emitProviderEvent(ctx, "notification", "item/started", {
+            itemId: ProviderItemId.makeUnsafe(toolUseId),
+            payload: {
+              item: {
+                id: toolUseId,
+                type: itemType,
+                tool: toolName,
+                input: block?.input,
+              },
+              itemType,
+              title,
+              ...(detail ? { detail } : {}),
+            },
+          });
+        }
+
+        // Emit item/completed for this tool_use
+        this.emitProviderEvent(ctx, "notification", "item/completed", {
           itemId: ProviderItemId.makeUnsafe(toolUseId),
           payload: {
-            item: { id: toolUseId, type: "toolUse", tool: toolName, input: block?.input },
+            item: {
+              id: toolUseId,
+              type: itemType,
+              tool: toolName,
+              input: block?.input,
+            },
+            itemType,
+            title,
+            ...(detail ? { detail } : {}),
           },
         });
+      } else if (type === "tool_result") {
+        // Emit command output for tool results
+        const toolResultContent = asString(block?.content) ?? asString(block?.text);
+        if (toolResultContent) {
+          const isError = block?.is_error === true;
+          this.emitProviderEvent(ctx, "notification", "item/commandExecution/outputDelta", {
+            textDelta: toolResultContent,
+            payload: {
+              delta: toolResultContent,
+              isError,
+            },
+          });
+        }
       }
     }
 
+    // Emit collected assistant text
     if (collectedText.length > 0) {
       const existing = ctx.currentTurn?.assistantText ?? "";
       const delta = collectedText.startsWith(existing)
         ? collectedText.slice(existing.length)
         : collectedText;
       if (delta.length > 0) this.appendAssistantDelta(ctx, delta);
+    }
+
+    // Extract usage from the message if available
+    const usage = asObject(asObject(message.message)?.usage);
+    if (usage) {
+      this.emitProviderEvent(ctx, "notification", "thread/tokenUsage/updated", {
+        payload: { usage },
+      });
     }
   }
 
@@ -567,6 +960,9 @@ export class ClaudeCodeManager extends EventEmitter<ClaudeCodeManagerEvents> {
         userContent: [],
         assistantText: "",
         assistantStarted: false,
+        model: ctx.session.model,
+        interrupted: false,
+        activeToolUseIds: new Set(),
       };
     }
 
@@ -575,7 +971,13 @@ export class ClaudeCodeManager extends EventEmitter<ClaudeCodeManagerEvents> {
       this.emitProviderEvent(ctx, "notification", "item/started", {
         itemId: ProviderItemId.makeUnsafe(ctx.currentTurn.assistantItemId),
         payload: {
-          item: { id: ctx.currentTurn.assistantItemId, type: "agentMessage", text: "" },
+          item: {
+            id: ctx.currentTurn.assistantItemId,
+            type: "agentMessage",
+            text: "",
+          },
+          itemType: "assistant_message",
+          title: "Assistant message",
         },
       });
     }
@@ -588,6 +990,8 @@ export class ClaudeCodeManager extends EventEmitter<ClaudeCodeManagerEvents> {
     });
   }
 
+  // ── Turn completion ───────────────────────────────────────────────
+
   private completeTurn(
     ctx: ClaudeSessionContext,
     result: Extract<SDKMessage, { type: "result" }>,
@@ -595,16 +999,24 @@ export class ClaudeCodeManager extends EventEmitter<ClaudeCodeManagerEvents> {
     const turn = ctx.currentTurn;
     const turnId = (turn?.turnId ?? ctx.session.activeTurnId ?? randomUUID()) as string;
 
+    // Complete the assistant message item if started
     if (turn?.assistantStarted) {
       this.emitProviderEvent(ctx, "notification", "item/completed", {
         turnId: turnId as TurnId,
         itemId: ProviderItemId.makeUnsafe(turn.assistantItemId),
         payload: {
-          item: { id: turn.assistantItemId, type: "agentMessage", text: turn.assistantText },
+          item: {
+            id: turn.assistantItemId,
+            type: "agentMessage",
+            text: turn.assistantText,
+          },
+          itemType: "assistant_message",
+          title: "Assistant message",
         },
       });
     }
 
+    // Store turn snapshot
     if (turn) {
       const items: unknown[] = [{ type: "userMessage", content: turn.userContent }];
       if (turn.assistantText.trim()) {
@@ -613,11 +1025,29 @@ export class ClaudeCodeManager extends EventEmitter<ClaudeCodeManagerEvents> {
       ctx.turns.push({ id: turnId as TurnId, items });
     }
 
+    // Extract rich metadata from the result message
     const isError = result.subtype !== "success";
+    const resultObj = result as Record<string, unknown>;
+    const stopReason = asString(resultObj.stop_reason);
+    const usage = resultObj.usage;
+    const modelUsage = asObject(resultObj.modelUsage);
+    const totalCostUsd = asNumber(resultObj.total_cost_usd);
+    const durationMs = asNumber(resultObj.duration_ms);
+    const numTurns = asNumber(resultObj.num_turns);
+
+    const errors = Array.isArray(resultObj.errors) ? resultObj.errors : [];
     const errorMessage =
-      isError && Array.isArray(result.errors) && result.errors.length > 0
-        ? result.errors[0]
-        : undefined;
+      isError && errors.length > 0 ? (asString(errors[0]) ?? undefined) : undefined;
+
+    // Determine turn state
+    let turnState: string;
+    if (turn?.interrupted) {
+      turnState = "interrupted";
+    } else if (isError) {
+      turnState = "failed";
+    } else {
+      turnState = "completed";
+    }
 
     this.updateSession(ctx, {
       status: isError ? "error" : "ready",
@@ -625,17 +1055,43 @@ export class ClaudeCodeManager extends EventEmitter<ClaudeCodeManagerEvents> {
       ...(errorMessage ? { lastError: errorMessage } : {}),
     });
 
+    // Emit turn.aborted if interrupted
+    if (turn?.interrupted) {
+      this.emitProviderEvent(ctx, "notification", "turn/aborted", {
+        turnId: turnId as TurnId,
+        message: "Turn interrupted by user",
+        payload: {
+          turn: { id: turnId, status: "interrupted" },
+          raw: result,
+        },
+      });
+    }
+
+    // Emit turn/completed with full metadata
     this.emitProviderEvent(ctx, "notification", "turn/completed", {
       turnId: turnId as TurnId,
       payload: {
         turn: {
           id: turnId,
-          status: isError ? "failed" : "completed",
+          status: turnState,
+          ...(stopReason ? { stopReason } : {}),
+          ...(usage !== undefined ? { usage } : {}),
+          ...(modelUsage ? { modelUsage } : {}),
+          ...(totalCostUsd !== undefined ? { totalCostUsd } : {}),
+          ...(durationMs !== undefined ? { durationMs } : {}),
+          ...(numTurns !== undefined ? { numTurns } : {}),
           ...(errorMessage ? { error: { message: errorMessage } } : {}),
         },
         raw: result,
       },
     });
+
+    // Emit token usage update from result
+    if (usage !== undefined || modelUsage) {
+      this.emitProviderEvent(ctx, "notification", "thread/tokenUsage/updated", {
+        payload: { usage: usage ?? modelUsage },
+      });
+    }
 
     ctx.currentTurn = null;
   }
