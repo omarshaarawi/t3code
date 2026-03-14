@@ -258,15 +258,13 @@ export class ClaudeCodeManager extends EventEmitter<ClaudeCodeManagerEvents> {
     try {
       const initialization = await ctx.query.initializationResult();
 
-      // The SDK may assign a different session ID
+      // The SDK may assign a different session ID. Store it as the
+      // resume cursor so we can reconnect later, but keep the
+      // canonical threadId unchanged -- the orchestration layer uses
+      // that to route events back to the correct thread.
       const sessionId = asString(asObject(initialization)?.session_id);
-      if (sessionId && sessionId !== (threadId as string)) {
-        this.updateSession(ctx, {
-          threadId: sessionId as ThreadId,
-          resumeCursor: sessionId,
-        });
-        this.sessions.delete(threadId as string);
-        this.sessions.set(sessionId, ctx);
+      if (sessionId) {
+        this.updateSession(ctx, { resumeCursor: sessionId });
       }
 
       this.updateSession(ctx, { status: "ready" });
@@ -445,9 +443,12 @@ export class ClaudeCodeManager extends EventEmitter<ClaudeCodeManagerEvents> {
   }
 
   private handleMessage(ctx: ClaudeSessionContext, message: SDKMessage): void {
+    // The SDK may report a different session_id in each message. Store
+    // it as the resume cursor but never change the canonical threadId
+    // -- the orchestration layer uses that to match events.
     const sessionThreadId = asString(asObject(message)?.session_id);
-    if (sessionThreadId && sessionThreadId !== (ctx.session.threadId as string)) {
-      this.updateSession(ctx, { threadId: sessionThreadId as ThreadId });
+    if (sessionThreadId && sessionThreadId !== ctx.session.resumeCursor) {
+      this.updateSession(ctx, { resumeCursor: sessionThreadId });
     }
 
     if (message.type === "system" && message.subtype === "init") {
