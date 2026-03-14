@@ -20,6 +20,8 @@ const RuntimeEventRawSource = Schema.Literals([
   "codex.app-server.request",
   "codex.eventmsg",
   "codex.sdk.thread-event",
+  "claude.sdk.message",
+  "claude.sdk.stream-event",
 ]);
 export type RuntimeEventRawSource = typeof RuntimeEventRawSource.Type;
 
