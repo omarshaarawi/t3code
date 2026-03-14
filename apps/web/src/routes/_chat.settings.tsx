@@ -55,6 +55,13 @@ const MODEL_PROVIDER_SETTINGS: Array<{
     placeholder: "your-codex-model-slug",
     example: "gpt-6.7-codex-ultra-preview",
   },
+  {
+    provider: "claude",
+    title: "Claude Code",
+    description: "Save additional Claude model slugs for the picker and `/model` command.",
+    placeholder: "your-claude-model-slug",
+    example: "claude-opus-4-6",
+  },
 ] as const;
 
 const TIMESTAMP_FORMAT_LABELS = {
@@ -71,8 +78,7 @@ function getCustomModelsForProvider(
     case "codex":
       return settings.customCodexModels;
     case "claude":
-    default:
-      return settings.customCodexModels;
+      return settings.customClaudeModels;
   }
 }
 
@@ -84,8 +90,7 @@ function getDefaultCustomModelsForProvider(
     case "codex":
       return defaults.customCodexModels;
     case "claude":
-    default:
-      return defaults.customCodexModels;
+      return defaults.customClaudeModels;
   }
 }
 
@@ -94,8 +99,7 @@ function patchCustomModels(provider: ProviderKind, models: string[]) {
     case "codex":
       return { customCodexModels: models };
     case "claude":
-    default:
-      return { customCodexModels: models };
+      return { customClaudeModels: models };
   }
 }
 
@@ -344,8 +348,8 @@ function SettingsRouteView() {
                   >
                     <SelectTrigger className="w-40" aria-label="Default provider">
                       <SelectValue>
-                        {PROVIDER_OPTIONS.find((o) => o.value === settings.defaultProvider)?.label ??
-                          settings.defaultProvider}
+                        {PROVIDER_OPTIONS.find((o) => o.value === settings.defaultProvider)
+                          ?.label ?? settings.defaultProvider}
                       </SelectValue>
                     </SelectTrigger>
                     <SelectPopup align="end">
@@ -366,7 +370,9 @@ function SettingsRouteView() {
                     </p>
                   </div>
                   <Select
-                    value={settings.defaultModel || DEFAULT_MODEL_BY_PROVIDER[settings.defaultProvider]}
+                    value={
+                      settings.defaultModel || DEFAULT_MODEL_BY_PROVIDER[settings.defaultProvider]
+                    }
                     onValueChange={(value) => {
                       if (value) updateSettings({ defaultModel: value });
                     }}
@@ -374,7 +380,9 @@ function SettingsRouteView() {
                     <SelectTrigger className="w-56" aria-label="Default model">
                       <SelectValue>
                         {(() => {
-                          const currentSlug = settings.defaultModel || DEFAULT_MODEL_BY_PROVIDER[settings.defaultProvider];
+                          const currentSlug =
+                            settings.defaultModel ||
+                            DEFAULT_MODEL_BY_PROVIDER[settings.defaultProvider];
                           const option = getModelOptions(settings.defaultProvider).find(
                             (o) => o.slug === currentSlug,
                           );
@@ -392,8 +400,8 @@ function SettingsRouteView() {
                   </Select>
                 </div>
 
-                {(settings.defaultProvider !== defaults.defaultProvider ||
-                  settings.defaultModel !== defaults.defaultModel) ? (
+                {settings.defaultProvider !== defaults.defaultProvider ||
+                settings.defaultModel !== defaults.defaultModel ? (
                   <div className="flex justify-end">
                     <Button
                       size="xs"
@@ -414,9 +422,9 @@ function SettingsRouteView() {
 
             <section className="rounded-2xl border border-border bg-card p-5">
               <div className="mb-4">
-                <h2 className="text-sm font-medium text-foreground">Codex App Server</h2>
+                <h2 className="text-sm font-medium text-foreground">Provider CLI Overrides</h2>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  These overrides apply to new sessions and let you use a non-default Codex install.
+                  Override paths to provider CLIs. Leave blank to use the default from PATH.
                 </p>
               </div>
 
@@ -449,25 +457,35 @@ function SettingsRouteView() {
                   </span>
                 </label>
 
-                <div className="flex flex-col gap-3 text-xs text-muted-foreground sm:flex-row sm:items-start sm:justify-between">
-                  <div className="min-w-0 flex-1">
-                    <p>Binary source</p>
-                    <p className="mt-1 break-all font-mono text-[11px] text-foreground">
-                      {codexBinaryPath || "PATH"}
-                    </p>
-                  </div>
+                <label htmlFor="claude-binary-path" className="block space-y-1">
+                  <span className="text-xs font-medium text-foreground">
+                    Claude Code binary path
+                  </span>
+                  <Input
+                    id="claude-binary-path"
+                    value={settings.claudeBinaryPath}
+                    onChange={(event) => updateSettings({ claudeBinaryPath: event.target.value })}
+                    placeholder="claude"
+                    spellCheck={false}
+                  />
+                  <span className="text-xs text-muted-foreground">
+                    Leave blank to use <code>claude</code> from your PATH.
+                  </span>
+                </label>
+
+                <div className="flex justify-end">
                   <Button
                     size="xs"
                     variant="outline"
-                    className="self-start"
                     onClick={() =>
                       updateSettings({
                         codexBinaryPath: defaults.codexBinaryPath,
                         codexHomePath: defaults.codexHomePath,
+                        claudeBinaryPath: defaults.claudeBinaryPath,
                       })
                     }
                   >
-                    Reset codex overrides
+                    Reset all CLI overrides
                   </Button>
                 </div>
               </div>
